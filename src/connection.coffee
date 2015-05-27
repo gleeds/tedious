@@ -82,7 +82,7 @@ class Connection extends EventEmitter
         connectTimeout: ->
           @transitionTo(@STATE.FINAL)
         reconnect: ->
-          @config.server = @routingData.server
+          @config.options.redirectionServer = @routingData.server
           @config.options.port = @routingData.port
           @transitionTo(@STATE.CONNECTING)
 
@@ -286,7 +286,7 @@ class Connection extends EventEmitter
     else if @config.options.port
       if @config.options.port < 0 or @config.options.port > 65536
         throw new RangeError "Port should be > 0 and < 65536"
-    
+
     if @config.options.columnNameReplacer && typeof @config.options.columnNameReplacer != 'function'
       throw new TypeError('options.columnNameReplacer must be a function or null.')
 
@@ -335,13 +335,13 @@ class Connection extends EventEmitter
         @loginError = ConnectionError "Server responded with unknown TDS version.", 'ETDS'
         @loggedIn = false
         return
-      
+
       unless token.interface
         # unsupported interface
         @loginError = ConnectionError "Server responded with unsupported interface.", 'EINTERFACENOTSUPP'
         @loggedIn = false
         return
-        
+
       # use negotiated version
       @config.options.tdsVersion = token.tdsVersion
       @loggedIn = true
@@ -385,7 +385,7 @@ class Connection extends EventEmitter
             columns[col.colName] = col for col in token.columns when not columns[col.colName]?
           else
             columns = token.columns
-            
+
           @request.emit('columnMetadata', columns)
         else
           @emit 'error', new Error "Received 'columnMetadata' when no sqlRequest is in progress"
@@ -402,7 +402,7 @@ class Connection extends EventEmitter
       if @request
         if @config.options.rowCollectionOnRequestCompletion
           @request.rows.push token.columns
-        
+
         if @config.options.rowCollectionOnDone
           @request.rst.push token.columns
 
@@ -445,7 +445,7 @@ class Connection extends EventEmitter
       if @request
         if token.attention
           @dispatchEvent("attention")
-        
+
         # check if the DONE_ERROR flags was set, but an ERROR token was not sent.
         if token.sqlError && !@request.error
           @request.error = RequestError('An unknown error has occurred.', 'UNKNOWN')
@@ -471,7 +471,7 @@ class Connection extends EventEmitter
       @connectOnPort(@config.options.port)
     else
       instanceLookup(
-        @config.server
+        @config.options.redirectionServer or @config.server
         @config.options.instanceName
         (message, port) =>
           if @state == @STATE.FINAL
@@ -486,7 +486,7 @@ class Connection extends EventEmitter
     @socket = new Socket({})
 
     connectOpts =
-      host: @config.server
+      host: @config.options.redirectionServer or @config.server
       port: port
 
     if @config.options.localAddress
@@ -517,7 +517,7 @@ class Connection extends EventEmitter
       @requestTimer = setTimeout(@requestTimeout, @config.options.requestTimeout)
 
   connectTimeout: =>
-    message = "Failed to connect to #{@config.server}:#{@config.options.port} in #{@config.options.connectTimeout}ms"
+    message = "Failed to connect to #{@config.options.redirectionServer or @config.server}:#{@config.options.port} in #{@config.options.connectTimeout}ms"
 
     @debug.log(message)
     @emit('connect', ConnectionError(message, 'ETIMEOUT'))
@@ -542,7 +542,7 @@ class Connection extends EventEmitter
     if @state == newState
       @debug.log("State is already #{newState.name}")
       return
-      
+
     if @state?.exit
       @state.exit.apply(@)
 
@@ -561,7 +561,7 @@ class Connection extends EventEmitter
 
   socketError: (error) =>
     if @state == @STATE.CONNECTING
-      message = "Failed to connect to #{@config.server}:#{@config.options.port} - #{error.message}"
+      message = "Failed to connect to #{@config.options.redirectionServer or @config.server}:#{@config.options.port} - #{error.message}"
       @debug.log(message)
       @emit('connect', ConnectionError(message, 'ESOCKET'))
     else
@@ -573,7 +573,7 @@ class Connection extends EventEmitter
   socketConnect: =>
     @socket.setKeepAlive(true, KEEP_ALIVE_INITIAL_DELAY)
     @closed = false
-    @debug.log("connected to #{@config.server}:#{@config.options.port}")
+    @debug.log("connected to #{@config.options.redirectionServer or @config.server}:#{@config.options.port}")
     @dispatchEvent('socketConnect')
 
   socketEnd: =>
@@ -581,7 +581,7 @@ class Connection extends EventEmitter
     @transitionTo(@STATE.FINAL)
 
   socketClose: =>
-    @debug.log("connection to #{@config.server}:#{@config.options.port} closed")
+    @debug.log("connection to #{@config.options.redirectionServer or @config.server}:#{@config.options.port} closed")
     if @state is @STATE.REROUTING
       @debug.log("Rerouting to #{@routingData.server}:#{@routingData.port}")
       @dispatchEvent('reconnect')
@@ -618,7 +618,7 @@ class Connection extends EventEmitter
       userName: @config.userName
       password: @config.password
       database: @config.options.database
-      serverName: @config.server
+      serverName: @config.options.redirectionServer or @config.server
       appName: @config.options.appName
       packetSize: @config.options.packetSize
       tdsVersion: @config.options.tdsVersion
@@ -744,10 +744,10 @@ set xact_abort #{xact_abort}"""
         request.callback request.error
 
     @makeRequest(request, TYPE.RPC_REQUEST, new RpcRequestPayload(request, @currentTransactionDescriptor(), @config.options))
-  
+
   newBulkLoad: (table, callback) ->
     return new BulkLoad(table, @config.options, callback)
-  
+
   execBulkLoad: (bulkLoad) ->
     request = new Request(bulkLoad.getBulkInsertSql(), (error) =>
       if error
@@ -788,7 +788,7 @@ set xact_abort #{xact_abort}"""
 
   beginTransaction: (callback, name, isolationLevel) ->
     isolationLevel ||= @config.options.isolationLevel
-      
+
     transaction = new Transaction(name || '', isolationLevel)
     if @config.options.tdsVersion < "7_2"
       return @execSqlBatch new Request "SET TRANSACTION ISOLATION LEVEL #{transaction.isolationLevelToTSQL()};BEGIN TRAN #{transaction.name}", callback
@@ -809,7 +809,7 @@ set xact_abort #{xact_abort}"""
 
   rollbackTransaction: (callback, name) ->
     transaction = new Transaction(name || '')
-    
+
     if @config.options.tdsVersion < "7_2"
       return @execSqlBatch new Request "ROLLBACK TRAN #{transaction.name}", callback
 
@@ -903,7 +903,7 @@ set xact_abort #{xact_abort}"""
       )
 
       @transitionTo(@STATE.SENT_CLIENT_REQUEST)
-  
+
   cancel: ->
     if @state != @STATE.SENT_CLIENT_REQUEST
       message = "Requests can only be canceled in the #{@STATE.SENT_CLIENT_REQUEST.name} state, not the #{@state.name} state"
